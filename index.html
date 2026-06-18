@@ -87,9 +87,17 @@
   .traylabel{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#C2C2C2;margin-bottom:8px;}
   .tray{display:flex;flex-wrap:wrap;gap:8px;min-height:70px;justify-content:center;align-items:flex-start;}
   .traycell{width:30%;aspect-ratio:156/122.667;position:relative;}
-  .traycell .piece{position:absolute;inset:0;width:100%;height:100%;}
+  .traycell .piece{position:absolute;inset:0;width:100%;height:100%;touch-action:none;cursor:grab;}
+  .traycell .piece:active{cursor:grabbing;}
   .tray .piece.sel{transform:scale(1.06);}
   .trayempty{font-size:13px;color:#C2C2C2;padding:18px 0;text-align:center;width:100%;}
+
+  /* drag and drop */
+  .draglayer{position:fixed;inset:0;pointer-events:none;z-index:100;}
+  .dragclone{position:fixed;pointer-events:none;height:auto;
+    filter:drop-shadow(0 6px 11px rgba(117,40,134,0.42));transform:scale(1.07);}
+  .slot.hot{outline:2px dashed #752886;outline-offset:-2px;border-radius:6px;
+    background:rgba(237,209,255,0.30);z-index:3;}
 
   /* shake */
   @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
@@ -155,7 +163,7 @@
 
   <!-- 1 -->
   <div class="title">ચિત્ર કોયડો</div>
-  <div class="subline">9 ટુકડા સાચી જગ્યાએ ગોઠવો</div>
+  <div class="subline">ટુકડા ખેંચીને સાચી જગ્યાએ ગોઠવો</div>
 
   <!-- 2 -->
   <div class="tabs" id="tabs">
@@ -203,9 +211,9 @@
   <div class="howto">
     <h3>How to Play</h3>
     <ul>
-      <li>નીચે ટ્રે માંથી એક ટુકડો પસંદ કરવા તેને ટેપ કરો.</li>
-      <li>પછી બોર્ડ પર સાચી ખાલી જગ્યાએ ટેપ કરો.</li>
-      <li>ટુકડો સાચી જગ્યાએ બેસે તો લૉક થઈ જશે.</li>
+      <li>ટ્રે માંથી ટુકડો પકડીને બોર્ડ પર ખેંચો.</li>
+      <li>સાચી જગ્યાએ છોડો — બરાબર હોય તો લૉક થઈ જશે.</li>
+      <li>ખોટી જગ્યાએ છોડશો તો ટુકડો પાછો ટ્રે માં આવશે.</li>
       <li>બધા 9 ટુકડા ગોઠવાય એટલે ચિત્ર પૂર્ણ! 🎉</li>
     </ul>
   </div>
@@ -345,10 +353,14 @@ for(let i=0;i<9;i++){
   s.dataset.idx=i;
   const h=document.createElement('div'); h.className='pieceHolder';
   s.appendChild(h);
-  s.addEventListener('click',()=>onSlotTap(i));
   boardEl.appendChild(s);
   slotEls.push(s);
 }
+
+/* drag layer */
+const dragLayer=document.createElement('div');
+dragLayer.className='draglayer';
+document.getElementById('page').appendChild(dragLayer);
 
 function placedCount(){return PIECES.filter(p=>typeof state.loc[p.id]==='number').length;}
 
@@ -384,8 +396,9 @@ function render(){
       cell.className='traycell';
       cell.innerHTML=pieceSVG(p);
       const el=cell.querySelector('.piece');
-      if(id===selectedId) el.classList.add('sel');
-      el.addEventListener('click',()=>selectPiece(id));
+      el.setAttribute('draggable','false');
+      el.addEventListener('pointerdown',(e)=>startDrag(e,id,el));
+      el.addEventListener('dragstart',(e)=>e.preventDefault());
       trayEl.appendChild(cell);
     });
   }
@@ -394,43 +407,74 @@ function render(){
   if(state.solved){tab0.className='tab done';stepsEl.classList.add('show');}
 }
 
-function selectPiece(id){
-  if(typeof state.loc[id]==='number') return; // locked / placed
-  selectedId = (selectedId===id)? null : id;
-  // update highlight without full rebuild
-  trayEl.querySelectorAll('.piece').forEach(el=>{
-    el.classList.toggle('sel', parseInt(el.dataset.id)===selectedId);
-  });
-  if(selectedId!=null && !state.solved){
-    showFeedback('હવે બોર્ડ પર સાચી જગ્યાએ ટેપ કરો','hint');
-  }else{
-    clearFeedback();
+/* ===== drag and drop ===== */
+let drag=null;
+function occupied(i){return PIECES.some(p=>state.loc[p.id]===i);}
+function clearHot(){slotEls.forEach(s=>s.classList.remove('hot'));}
+function slotAt(x,y){
+  for(let i=0;i<9;i++){
+    const r=slotEls[i].getBoundingClientRect();
+    if(x>=r.left&&x<=r.right&&y>=r.top&&y<=r.bottom) return i;
   }
+  return null;
 }
-
-function onSlotTap(i){
+function startDrag(e,id,el){
   if(state.solved) return;
-  if(selectedId==null){
-    showFeedback('પહેલા નીચેથી એક ટુકડો પસંદ કરો','hint');
-    return;
-  }
-  // slot occupied?
-  const occupied = PIECES.some(p=>state.loc[p.id]===i);
-  if(occupied) return; // locked piece already there
-
-  const p=PIECES[selectedId];
-  if(p.id===i){
-    // correct placement
-    placePiece(p,i,false);
+  if(e.button!=null && e.button>0) return;
+  e.preventDefault();
+  if(state.sound) ac();
+  const r=el.getBoundingClientRect();
+  const clone=el.cloneNode(true);
+  clone.classList.add('dragclone');
+  clone.style.width=r.width+'px';
+  clone.style.height=r.height+'px';
+  clone.style.left=r.left+'px';
+  clone.style.top=r.top+'px';
+  dragLayer.appendChild(clone);
+  el.style.visibility='hidden';
+  drag={id,clone,el,offX:e.clientX-r.left,offY:e.clientY-r.top,w:r.width,h:r.height};
+  document.addEventListener('pointermove',onDragMove,{passive:false});
+  document.addEventListener('pointerup',onDragEnd);
+  document.addEventListener('pointercancel',onDragEnd);
+  clearFeedback();
+}
+function onDragMove(e){
+  if(!drag) return;
+  e.preventDefault();
+  const nx=e.clientX-drag.offX, ny=e.clientY-drag.offY;
+  drag.clone.style.left=nx+'px';
+  drag.clone.style.top=ny+'px';
+  const cx=nx+drag.w/2, cy=ny+drag.h/2;
+  const idx=slotAt(cx,cy);
+  clearHot();
+  if(idx!=null && !occupied(idx)) slotEls[idx].classList.add('hot');
+}
+function endDrag(){
+  document.removeEventListener('pointermove',onDragMove);
+  document.removeEventListener('pointerup',onDragEnd);
+  document.removeEventListener('pointercancel',onDragEnd);
+}
+function onDragEnd(){
+  if(!drag) return;
+  endDrag();
+  const cx=parseFloat(drag.clone.style.left)+drag.w/2;
+  const cy=parseFloat(drag.clone.style.top)+drag.h/2;
+  drag.clone.remove();
+  clearHot();
+  const idx=slotAt(cx,cy);
+  const id=drag.id, el=drag.el;
+  if(idx===id && !occupied(id)){
+    drag=null;
+    placePiece(PIECES[id],id,false);
   }else{
-    // wrong slot -> shake selected tray piece
-    const el=trayEl.querySelector(`.piece[data-id="${selectedId}"]`);
-    if(el){
+    el.style.visibility='visible';
+    if(idx!=null && idx!==id && !occupied(idx)){
       el.classList.remove('shake');void el.offsetWidth;el.classList.add('shake');
       el.addEventListener('animationend',()=>el.classList.remove('shake'),{once:true});
+      if(state.sound) playWrong();
+      showFeedback('આ ટુકડો અહીં બરાબર નથી — બીજી જગ્યા જુઓ','bad');
     }
-    if(state.sound) playWrong();
-    showFeedback('આ ટુકડો અહીં બરાબર નથી — ફરી પ્રયત્ન કરો','bad');
+    drag=null;
   }
 }
 
